@@ -20,6 +20,11 @@ from main import (
 from recognizer import RealtimeRecognizer
 
 
+DEFAULT_MODEL_SIZE = "medium"
+DEFAULT_DEVICE = "cpu"
+DEFAULT_COMPUTE_TYPE = "int8"
+
+
 def recognize_audio_url(
     audio_url,
     mode="logistic",
@@ -27,9 +32,9 @@ def recognize_audio_url(
     logistic_recognizer=None,
     transcribe_func=None,
     model=None,
-    model_size="small",
-    device="cpu",
-    compute_type="int8",
+    model_size=DEFAULT_MODEL_SIZE,
+    device=DEFAULT_DEVICE,
+    compute_type=DEFAULT_COMPUTE_TYPE,
     language="vi",
     cache_dir=None,
     threshold=None,
@@ -120,9 +125,9 @@ class RealtimeRecognitionSession:
         logistic_recognizer=None,
         transcribe_func=None,
         model=None,
-        model_size="small",
-        device="cuda",
-        compute_type="float16",
+        model_size=DEFAULT_MODEL_SIZE,
+        device=DEFAULT_DEVICE,
+        compute_type=DEFAULT_COMPUTE_TYPE,
         language="vi",
         beam_size=5,
         vad_filter=True,
@@ -264,9 +269,9 @@ def build_api_app(
     recognizer=None,
     transcribe_func=None,
     model=None,
-    model_size="small",
-    device="cpu",
-    compute_type="int8",
+    model_size=DEFAULT_MODEL_SIZE,
+    device=DEFAULT_DEVICE,
+    compute_type=DEFAULT_COMPUTE_TYPE,
     language="vi",
     cache_dir=None,
 ):
@@ -425,9 +430,9 @@ class RecognitionHandler(BaseHTTPRequestHandler):
     recognizer = RealtimeRecognizer(TARGET_PHRASES)
     logistic_recognizer = LogisticTextRecognizer()
     model = None
-    model_size = "small"
-    device = "cpu"
-    compute_type = "int8"
+    model_size = DEFAULT_MODEL_SIZE
+    device = DEFAULT_DEVICE
+    compute_type = DEFAULT_COMPUTE_TYPE
     language = "vi"
     cache_dir = DEFAULT_OUTPUT_DIR / "api_cache"
 

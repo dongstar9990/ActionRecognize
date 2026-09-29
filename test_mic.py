@@ -6,8 +6,8 @@ import wave
 
 
 SR = 16000
-CHUNK_SEC = 1
-WS_URL = "ws://127.0.0.1:8000/recognize/ws"
+CHUNK_SEC = 2
+WS_URL = "ws://10.10.0.158:8000/recognize/ws"
 MIN_SPEECH_RMS = 300
 NOISE_MULTIPLIER = 3
 PING_INTERVAL = 30
@@ -29,8 +29,8 @@ def build_realtime_config():
         "stop_on_match": True,
         "chunk_suffix": ".wav",
         "language": "vi",
-        "model_size": "tiny",
-        "device": "cpu",
+        "model_size": "small",
+        "device": "cuda",
         "compute_type": "int8",
         "beam_size": 1,
         "vad_filter": False,

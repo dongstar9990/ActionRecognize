@@ -213,6 +213,35 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(result["threshold"], 0.8)
         self.assertIn("de lai loi nhan", result["transcript"])
 
+    def test_recognize_audio_url_loads_medium_model_by_default(self):
+        loaded = []
+
+        def fake_load_model(model_size, device, compute_type):
+            loaded.append((model_size, device, compute_type))
+            return "fake-model"
+
+        def fake_transcribe(model, audio_path, language):
+            self.assertEqual(model, "fake-model")
+            self.assertEqual(language, "vi")
+            return "alo", [{"start": 0.0, "end": 1.0, "text": "alo"}], 1.0
+
+        with TemporaryDirectory() as tmpdir:
+            audio_path = Path(tmpdir) / "sample.mp3"
+            audio_path.write_bytes(b"audio")
+            with mock.patch("api.load_whisper_model", new=fake_load_model), \
+                    mock.patch("api.transcribe_audio", new=fake_transcribe):
+                api.recognize_audio_url(
+                    str(audio_path),
+                    mode="fuzzy",
+                    recognizer=RealtimeRecognizer(["de lai loi nhan sau tieng bip"]),
+                )
+
+        self.assertEqual(
+            loaded,
+            [(api.DEFAULT_MODEL_SIZE, api.DEFAULT_DEVICE, api.DEFAULT_COMPUTE_TYPE)],
+        )
+        self.assertEqual(api.DEFAULT_MODEL_SIZE, "medium")
+
     def test_realtime_session_returns_partial_until_accumulated_chunks_match(self):
         transcribed_paths = []
 
@@ -295,6 +324,32 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(result["chunk_index"], 1)
         self.assertEqual(result["processed_batches"], 1)
 
+    def test_realtime_session_loads_medium_model_by_default(self):
+        loaded = []
+
+        def fake_load_model(model_size, device, compute_type):
+            loaded.append((model_size, device, compute_type))
+            return "fake-model"
+
+        def fake_transcribe(model, audio_path, language, beam_size=5, vad_filter=True):
+            self.assertEqual(model, "fake-model")
+            return "alo", [{"start": 0.0, "end": 1.0, "text": "alo"}], 1.0
+
+        with TemporaryDirectory() as tmpdir:
+            session = api.RealtimeRecognitionSession(
+                recognizer=RealtimeRecognizer(["de lai loi nhan sau tieng bip"]),
+                cache_dir=Path(tmpdir),
+                mode="fuzzy",
+            )
+            with mock.patch("api.load_whisper_model", new=fake_load_model), \
+                    mock.patch("api.transcribe_audio", new=fake_transcribe):
+                session.process_chunk(b"audio", suffix=".wav")
+
+        self.assertEqual(
+            loaded,
+            [(api.DEFAULT_MODEL_SIZE, api.DEFAULT_DEVICE, api.DEFAULT_COMPUTE_TYPE)],
+        )
+
     def test_decode_websocket_audio_message_accepts_base64_audio_payload(self):
         encoded_audio = base64.b64encode(b"first audio").decode("ascii")
 
@@ -362,6 +417,20 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(small, "small-cpu-int8")
         self.assertIs(tiny_again, tiny)
         self.assertEqual(loaded, [("tiny", "cpu", "int8"), ("small", "cpu", "int8")])
+
+    def test_build_api_app_registers_injected_model_under_medium_defaults(self):
+        try:
+            app = api.build_api_app(model="fake-model")
+        except RuntimeError:
+            self.skipTest("FastAPI is not installed")
+
+        key = (api.DEFAULT_MODEL_SIZE, api.DEFAULT_DEVICE, api.DEFAULT_COMPUTE_TYPE)
+        self.assertEqual(app.state.models[key], "fake-model")
+
+    def test_legacy_http_handler_uses_medium_model_defaults(self):
+        self.assertEqual(api.RecognitionHandler.model_size, api.DEFAULT_MODEL_SIZE)
+        self.assertEqual(api.RecognitionHandler.device, api.DEFAULT_DEVICE)
+        self.assertEqual(api.RecognitionHandler.compute_type, api.DEFAULT_COMPUTE_TYPE)
 
     def test_websocket_realtime_endpoint_returns_partial_and_match(self):
         if os.environ.get("RUN_FASTAPI_WS_TESTS") != "1":
