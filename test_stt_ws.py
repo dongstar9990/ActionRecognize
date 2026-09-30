@@ -8,9 +8,9 @@ import wave
 
 SR = 16000
 CHUNK_SEC = 2
-WS_URL = "ws://10.10.0.158:8000/recognize/ws"
+WS_URL = "ws://127.0.0.1:8000/stt/ws"
 MIN_SPEECH_RMS = 100
-MAX_SPEECH_RMS = 900
+MAX_SPEECH_RMS = 1500
 NOISE_MULTIPLIER = 1
 PING_INTERVAL = 30
 PING_TIMEOUT = 120
@@ -25,7 +25,7 @@ UNREACHABLE_TARGET_PHRASES = [
 
 
 def parse_args(argv=None):
-    parser = argparse.ArgumentParser(description="Stream microphone audio to realtime recognition.")
+    parser = argparse.ArgumentParser(description="Stream microphone audio to /stt/ws (external STT).")
     parser.add_argument("--min-speech-rms", type=float, default=MIN_SPEECH_RMS)
     parser.add_argument("--max-speech-rms", type=float, default=MAX_SPEECH_RMS)
     parser.add_argument("--noise-multiplier", type=float, default=NOISE_MULTIPLIER)
@@ -38,17 +38,14 @@ def parse_args(argv=None):
 
 
 def build_realtime_config():
+    # /stt/ws dùng API STT ngoài (api.g-ailab.com) nên KHÔNG có model_size/device/
+    # compute_type/beam_size/vad_filter/language như /recognize/ws (whisper local) —
+    # những field đó bị bỏ qua nếu gửi lên, nên bỏ luôn cho gọn.
     return {
         "mode": "fuzzy",
         "threshold": 70,
         "stop_on_match": True,
         "chunk_suffix": ".wav",
-        "language": "vi",
-        "model_size": "base",
-        "device": "cuda",
-        "compute_type": "int8",
-        "beam_size": 1,
-        "vad_filter": False,
         "target_phrases": UNREACHABLE_TARGET_PHRASES,
     }
 
@@ -85,10 +82,10 @@ def should_send_audio(pcm_int16, threshold, audio_gate_enabled=True):
 
 
 def calibrate_noise(
-    sd,
-    min_speech_rms=MIN_SPEECH_RMS,
-    noise_multiplier=NOISE_MULTIPLIER,
-    max_speech_rms=MAX_SPEECH_RMS,
+        sd,
+        min_speech_rms=MIN_SPEECH_RMS,
+        noise_multiplier=NOISE_MULTIPLIER,
+        max_speech_rms=MAX_SPEECH_RMS,
 ):
     print("Giữ yên 1 giây để đo nhiễu nền...", flush=True)
     audio = sd.rec(
@@ -140,7 +137,7 @@ async def main(argv=None):
                 max_speech_rms=args.max_speech_rms,
             )
         skipped_chunks = 0
-        print("Đang nghe realtime... nói đi, Ctrl+C để dừng")
+        print("Đang nghe realtime (external STT)... nói đi, Ctrl+C để dừng")
 
         try:
             while True:
@@ -156,9 +153,9 @@ async def main(argv=None):
                 pcm = audio[:, 0]
                 rms = audio_rms(pcm)
                 if not should_send_audio(
-                    pcm,
-                    speech_threshold,
-                    audio_gate_enabled=not args.disable_audio_gate,
+                        pcm,
+                        speech_threshold,
+                        audio_gate_enabled=not args.disable_audio_gate,
                 ):
                     skipped_chunks += 1
                     if skipped_chunks == 1 or skipped_chunks % 5 == 0:

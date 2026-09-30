@@ -18,6 +18,11 @@ from main import (
     transcribe_audio,
 )
 from recognizer import RealtimeRecognizer
+from external_stt import (
+    ExternalSTTError,
+    external_transcribe_bytes_func,
+    transcribe_bytes_with_external_api,
+)
 
 
 DEFAULT_MODEL_SIZE = "medium"
@@ -26,18 +31,18 @@ DEFAULT_COMPUTE_TYPE = "int8"
 
 
 def recognize_audio_url(
-    audio_url,
-    mode="logistic",
-    recognizer=None,
-    logistic_recognizer=None,
-    transcribe_func=None,
-    model=None,
-    model_size=DEFAULT_MODEL_SIZE,
-    device=DEFAULT_DEVICE,
-    compute_type=DEFAULT_COMPUTE_TYPE,
-    language="vi",
-    cache_dir=None,
-    threshold=None,
+        audio_url,
+        mode="logistic",
+        recognizer=None,
+        logistic_recognizer=None,
+        transcribe_func=None,
+        model=None,
+        model_size=DEFAULT_MODEL_SIZE,
+        device=DEFAULT_DEVICE,
+        compute_type=DEFAULT_COMPUTE_TYPE,
+        language="vi",
+        cache_dir=None,
+        threshold=None,
 ):
     recognizer = recognizer or RealtimeRecognizer(TARGET_PHRASES)
     cache_dir = Path(cache_dir or DEFAULT_OUTPUT_DIR / "api_cache")
@@ -120,20 +125,21 @@ def get_cached_model(model_cache, model_size, device, compute_type, loader=load_
 
 class RealtimeRecognitionSession:
     def __init__(
-        self,
-        recognizer,
-        logistic_recognizer=None,
-        transcribe_func=None,
-        model=None,
-        model_size=DEFAULT_MODEL_SIZE,
-        device=DEFAULT_DEVICE,
-        compute_type=DEFAULT_COMPUTE_TYPE,
-        language="vi",
-        beam_size=5,
-        vad_filter=True,
-        cache_dir=None,
-        mode="fuzzy",
-        threshold=None,
+            self,
+            recognizer,
+            logistic_recognizer=None,
+            transcribe_func=None,
+            transcribe_bytes_func=None,
+            model=None,
+            model_size=DEFAULT_MODEL_SIZE,
+            device=DEFAULT_DEVICE,
+            compute_type=DEFAULT_COMPUTE_TYPE,
+            language="vi",
+            beam_size=5,
+            vad_filter=True,
+            cache_dir=None,
+            mode="fuzzy",
+            threshold=None,
     ):
         if mode not in ("fuzzy", "logistic"):
             raise ValueError("mode must be 'logistic' or 'fuzzy'")
@@ -141,6 +147,7 @@ class RealtimeRecognitionSession:
         self.recognizer = recognizer
         self.logistic_recognizer = logistic_recognizer
         self.transcribe_func = transcribe_func
+        self.transcribe_bytes_func = transcribe_bytes_func
         self.model = model
         self.model_size = model_size
         self.device = device
@@ -156,18 +163,27 @@ class RealtimeRecognitionSession:
         self.segments = []
         self.transcript_parts = []
 
-        base_dir = Path(cache_dir or DEFAULT_OUTPUT_DIR / "api_cache") / "realtime"
-        self.chunk_dir = base_dir / uuid.uuid4().hex
-        self.chunk_dir.mkdir(parents=True, exist_ok=True)
+        # Khi có transcribe_bytes_func (vd STT ngoài), không cần ghi chunk ra
+        # ổ đĩa nên bỏ qua tạo thư mục cache cho session này.
+        self.chunk_dir = None
+        if self.transcribe_bytes_func is None:
+            base_dir = Path(cache_dir or DEFAULT_OUTPUT_DIR / "api_cache") / "realtime"
+            self.chunk_dir = base_dir / uuid.uuid4().hex
+            self.chunk_dir.mkdir(parents=True, exist_ok=True)
 
     def process_chunk(self, chunk_bytes, suffix=".bin"):
         self.chunk_index += 1
-        chunk_path = self.chunk_dir / f"chunk_{self.chunk_index:06d}{self._safe_suffix(suffix)}"
-        chunk_path.write_bytes(chunk_bytes)
 
-        if self.transcribe_func is not None:
+        if self.transcribe_bytes_func is not None:
+            # Gửi thẳng bytes trong RAM, không ghi file ra ổ đĩa.
+            transcript, segments, duration = self.transcribe_bytes_func(chunk_bytes, suffix)
+        elif self.transcribe_func is not None:
+            chunk_path = self.chunk_dir / f"chunk_{self.chunk_index:06d}{self._safe_suffix(suffix)}"
+            chunk_path.write_bytes(chunk_bytes)
             transcript, segments, duration = self.transcribe_func(chunk_path)
         else:
+            chunk_path = self.chunk_dir / f"chunk_{self.chunk_index:06d}{self._safe_suffix(suffix)}"
+            chunk_path.write_bytes(chunk_bytes)
             active_model = self.model or load_whisper_model(
                 self.model_size,
                 self.device,
@@ -266,17 +282,17 @@ class RealtimeRecognitionSession:
 
 
 def build_api_app(
-    recognizer=None,
-    transcribe_func=None,
-    model=None,
-    model_size=DEFAULT_MODEL_SIZE,
-    device=DEFAULT_DEVICE,
-    compute_type=DEFAULT_COMPUTE_TYPE,
-    language="vi",
-    cache_dir=None,
+        recognizer=None,
+        transcribe_func=None,
+        model=None,
+        model_size=DEFAULT_MODEL_SIZE,
+        device=DEFAULT_DEVICE,
+        compute_type=DEFAULT_COMPUTE_TYPE,
+        language="vi",
+        cache_dir=None,
 ):
     try:
-        from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+        from fastapi import File, FastAPI, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
         from pydantic import BaseModel, Field
     except ImportError as exc:
         raise RuntimeError(
@@ -347,6 +363,7 @@ def build_api_app(
             await websocket.send_json(error_payload("initial JSON config is required"))
             await websocket.close(code=1003)
             return
+        print(f"[server] model_size={model_size} device={device} compute_type={compute_type}", flush=True)
 
         mode = config.get("mode", "fuzzy")
         stop_on_match = config.get("stop_on_match", True)
@@ -423,6 +440,89 @@ def build_api_app(
             await websocket.send_json(error_payload(str(exc)))
             await websocket.close(code=1011)
 
+    # --- STT bằng API ngoài (api.g-ailab.com), không dùng whisper local ---
+
+    @app.post("/stt")
+    async def stt_external(file: UploadFile = File(...)):
+        audio_bytes = await file.read()
+        filename = file.filename or "audio.wav"
+
+        try:
+            return transcribe_bytes_with_external_api(audio_bytes, filename=filename)
+        except ExternalSTTError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.websocket("/stt/ws")
+    async def stt_realtime_external(websocket: WebSocket):
+        await websocket.accept()
+        try:
+            config = await websocket.receive_json()
+        except Exception:
+            await websocket.send_json(error_payload("initial JSON config is required"))
+            await websocket.close(code=1003)
+            return
+
+        mode = config.get("mode", "logistic")
+        stop_on_match = config.get("stop_on_match", True)
+        threshold = config.get("threshold")
+        active_recognizer = app.state.recognizer
+        if config.get("target_phrases") is not None or threshold is not None:
+            active_recognizer = RealtimeRecognizer(
+                target_phrases=config.get("target_phrases") or active_recognizer.target_phrases,
+                threshold=threshold if threshold is not None else active_recognizer.threshold,
+                padding=active_recognizer.padding,
+                max_window_segments=active_recognizer.max_window_segments,
+            )
+
+        try:
+            # transcribe_bytes_func=external_transcribe_bytes_func -> mỗi chunk audio
+            # được gửi thẳng bằng bytes trong RAM sang api.g-ailab.com/api/v1/stt,
+            # KHÔNG ghi file tạm ra ổ đĩa.
+            session = RealtimeRecognitionSession(
+                recognizer=active_recognizer,
+                logistic_recognizer=LogisticTextRecognizer(),
+                transcribe_bytes_func=external_transcribe_bytes_func,
+                mode=mode,
+                threshold=threshold,
+            )
+
+            while True:
+                message = await websocket.receive()
+                if "bytes" in message and message["bytes"] is not None:
+                    result = await process_realtime_chunk(
+                        session,
+                        message["bytes"],
+                        config.get("chunk_suffix", ".wav"),
+                    )
+                    await websocket.send_json(result)
+                    if result["matched"] and stop_on_match:
+                        await websocket.close(code=1000)
+                        return
+                elif "text" in message and message["text"] is not None:
+                    payload = json.loads(message["text"])
+                    if payload.get("type") == "end":
+                        await websocket.send_json(session.final_result())
+                        await websocket.close(code=1000)
+                        return
+                    chunk_bytes, suffix = decode_websocket_audio_message(payload)
+                    result = await process_realtime_chunk(session, chunk_bytes, suffix)
+                    await websocket.send_json(result)
+                    if result["matched"] and stop_on_match:
+                        await websocket.close(code=1000)
+                        return
+        except WebSocketDisconnect:
+            return
+        except (json.JSONDecodeError, ValueError) as exc:
+            await websocket.send_json(error_payload(str(exc)))
+        except ExternalSTTError as exc:
+            await websocket.send_json(error_payload(f"external STT error: {exc}"))
+            await websocket.close(code=1011)
+        except Exception as exc:
+            await websocket.send_json(error_payload(str(exc)))
+            await websocket.close(code=1011)
+
     return app
 
 
@@ -435,6 +535,7 @@ class RecognitionHandler(BaseHTTPRequestHandler):
     compute_type = DEFAULT_COMPUTE_TYPE
     language = "vi"
     cache_dir = DEFAULT_OUTPUT_DIR / "api_cache"
+    print(f"[server] model_size={model_size} device={device} compute_type={compute_type}", flush=True)
 
     def do_POST(self):
         if urlparse(self.path).path != "/recognize":

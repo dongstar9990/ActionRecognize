@@ -504,13 +504,13 @@ class MicRealtimeClientTests(unittest.TestCase):
 
         config = test_mic.build_realtime_config()
 
-        self.assertEqual(test_mic.CHUNK_SEC, 1)
+        self.assertEqual(test_mic.CHUNK_SEC, 2)
         self.assertEqual(config["mode"], "fuzzy")
         self.assertEqual(config["threshold"], 70)
         self.assertTrue(config["stop_on_match"])
         self.assertEqual(config["chunk_suffix"], ".wav")
-        self.assertEqual(config["model_size"], "tiny")
-        self.assertEqual(config["device"], "cpu")
+        self.assertEqual(config["model_size"], "small")
+        self.assertEqual(config["device"], "cuda")
         self.assertEqual(config["compute_type"], "int8")
         self.assertEqual(config["beam_size"], 1)
         self.assertFalse(config["vad_filter"])
@@ -518,6 +518,24 @@ class MicRealtimeClientTests(unittest.TestCase):
             "thuê bao quý khách vừa gọi tạm thời không liên lạc được",
             config["target_phrases"],
         )
+
+    def test_mic_parse_args_accepts_audio_gate_tuning(self):
+        test_mic = self.import_test_mic_without_running()
+
+        args = test_mic.parse_args([
+            "--min-speech-rms",
+            "250",
+            "--max-speech-rms",
+            "900",
+            "--noise-multiplier",
+            "2.5",
+            "--disable-audio-gate",
+        ])
+
+        self.assertEqual(args.min_speech_rms, 250)
+        self.assertEqual(args.max_speech_rms, 900)
+        self.assertEqual(args.noise_multiplier, 2.5)
+        self.assertTrue(args.disable_audio_gate)
 
     def test_mic_formats_partial_and_match_results_for_console(self):
         test_mic = self.import_test_mic_without_running()
@@ -553,6 +571,33 @@ class MicRealtimeClientTests(unittest.TestCase):
         self.assertEqual(test_mic.audio_rms(silence), 0.0)
         self.assertFalse(test_mic.should_send_audio(quiet_noise, threshold=300))
         self.assertTrue(test_mic.should_send_audio(speech, threshold=300))
+        self.assertTrue(
+            test_mic.should_send_audio(
+                quiet_noise,
+                threshold=300,
+                audio_gate_enabled=False,
+            )
+        )
+
+    def test_mic_calibration_caps_noisy_room_threshold(self):
+        test_mic = self.import_test_mic_without_running()
+
+        class FakeRecording:
+            def __getitem__(self, key):
+                return [939, -939, 939, -939]
+
+        fake_sounddevice = types.SimpleNamespace(
+            rec=lambda *args, **kwargs: FakeRecording()
+        )
+
+        threshold = test_mic.calibrate_noise(
+            fake_sounddevice,
+            min_speech_rms=300,
+            noise_multiplier=3,
+            max_speech_rms=800,
+        )
+
+        self.assertEqual(threshold, 800)
 
     def test_mic_websocket_options_tolerate_slow_local_inference(self):
         test_mic = self.import_test_mic_without_running()
