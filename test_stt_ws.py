@@ -8,7 +8,7 @@ import wave
 
 SR = 16000
 CHUNK_SEC = 2
-WS_URL = "ws://127.0.0.1:8000/stt/ws"
+WS_URL = "ws://10.10.0.158:8000/stt/ws"
 MIN_SPEECH_RMS = 100
 MAX_SPEECH_RMS = 1500
 NOISE_MULTIPLIER = 1

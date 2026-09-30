@@ -7,3 +7,5 @@ pydantic==2.13.5
 sounddevice==0.5.6
 numpy
 websockets
+requests
+python-multipart
